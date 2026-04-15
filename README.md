@@ -72,13 +72,13 @@ First, you need to log in to claude code cli via OAuth, which allows subsequent 
 Then, on a machine/terminal where you can normally use `claude -p "hello?"`, proceed with the installation of this project:
 
 ```bash
-git clone https://example.com/your-repo.git cc2api
+git clone https://github.com/maxchiron/cc2api
 cd cc2api
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate   # macOS/Linux
 # .venv\Scripts\Activate.ps1   # Windows PowerShell
 pip install -e .
-python app.py
+cc2api
 ```
 
 Then send a request to the OpenAI-compatible endpoint:

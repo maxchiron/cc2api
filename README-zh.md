@@ -71,13 +71,13 @@ claud本仓库面向希望将现有 OpenAI 风格客户端与 Claude Code 命令
 然后，在能够正常使用 `claude -p "你好吗？"`的机器/终端里，进行本项目的安装：
 
 ```bash
-git clone https://example.com/your-repo.git cc2api
+git clone https://github.com/maxchiron/cc2api
 cd cc2api
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate   # macOS/Linux
 # .venv\Scripts\Activate.ps1   # Windows PowerShell
 pip install -e .
-python app.py
+cc2api
 ```
 
 然后发送请求到 OpenAI 兼容端点：
