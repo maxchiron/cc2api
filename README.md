@@ -1,6 +1,6 @@
 <h1 align="center">cc2api</h1>
 
-<p align="center">[English](README.md) | [中文](README-zh.md)</p>
+<p align="center"><a href="https://github.com/maxchiron/cc2api">English</a> | <a href="https://github.com/maxchiron/cc2api/blob/main/README-zh.md">中文</a></p>
 
 <div align="center">
   <img src="logo.png" alt="cc2api Logo">
