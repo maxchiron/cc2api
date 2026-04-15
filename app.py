@@ -4,11 +4,11 @@ import os
 import subprocess
 import time
 import uuid
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Optional, Union
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from starlette.responses import StreamingResponse
 
 app = FastAPI(title="cc2api", description="Claude Code CLI to OpenAI-compatible API gateway")
@@ -19,11 +19,15 @@ DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 # ── Request / Response models (OpenAI-compatible) ──────────────────────────
 
 class Message(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     role: str
-    content: str
+    content: Union[str, list, None] = None
 
 
 class ChatCompletionRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     model: str = "claude-code"
     messages: list[Message]
     max_tokens: Optional[int] = None
@@ -37,6 +41,24 @@ class ChatCompletionResponse(BaseModel):
     model: str
     choices: list[dict]
     usage: dict
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────
+
+def normalize_content(content: Union[str, list, None]) -> str:
+    """Convert OpenAI-style content (str | list of parts | None) to plain text."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    # list of content parts, e.g. [{"type": "text", "text": "hello"}, ...]
+    parts: list[str] = []
+    for part in content:
+        if isinstance(part, str):
+            parts.append(part)
+        elif isinstance(part, dict) and part.get("type") == "text":
+            parts.append(part.get("text", ""))
+    return "\n".join(parts)
 
 
 # ── Claude CLI runner ──────────────────────────────────────────────────────
@@ -91,6 +113,18 @@ def get_claude_env() -> dict:
     }
 
 
+def _make_chunk(completion_id: str, created: int, model: str,
+                delta: dict, finish_reason: Optional[str] = None) -> str:
+    chunk = {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+    }
+    return f"data: {json.dumps(chunk)}\n\n"
+
+
 async def stream_claude_sse(prompt: str, system_prompt: str, model: Optional[str],
                             req_model: str) -> AsyncGenerator[str, None]:
     """Run claude with stream-json and yield OpenAI-compatible SSE chunks."""
@@ -100,23 +134,25 @@ async def stream_claude_sse(prompt: str, system_prompt: str, model: Optional[str
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
 
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=env,
-    )
+    # Spawn the subprocess — surface errors as visible SSE content
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+    except Exception as exc:
+        yield _make_chunk(completion_id, created, req_model,
+                          {"role": "assistant", "content": f"[cc2api] Failed to start claude: {exc}"}, "stop")
+        yield "data: [DONE]\n\n"
+        return
 
     # First chunk: send the role
-    first_chunk = {
-        "id": completion_id,
-        "object": "chat.completion.chunk",
-        "created": created,
-        "model": req_model,
-        "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}],
-    }
-    yield f"data: {json.dumps(first_chunk)}\n\n"
+    yield _make_chunk(completion_id, created, req_model,
+                      {"role": "assistant", "content": ""})
 
+    got_text = False
     try:
         async for raw_line in proc.stdout:
             line = raw_line.decode("utf-8", errors="replace").strip()
@@ -136,31 +172,28 @@ async def stream_claude_sse(prompt: str, system_prompt: str, model: Optional[str
                     delta = inner.get("delta", {})
                     if delta.get("type") == "text_delta":
                         text = delta.get("text", "")
-                        chunk = {
-                            "id": completion_id,
-                            "object": "chat.completion.chunk",
-                            "created": created,
-                            "model": req_model,
-                            "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}],
-                        }
-                        yield f"data: {json.dumps(chunk)}\n\n"
+                        got_text = True
+                        yield _make_chunk(completion_id, created, req_model,
+                                          {"content": text})
 
                 elif etype == "message_delta":
                     stop_reason = inner.get("delta", {}).get("stop_reason")
                     finish_reason = "stop" if stop_reason else None
-                    chunk = {
-                        "id": completion_id,
-                        "object": "chat.completion.chunk",
-                        "created": created,
-                        "model": req_model,
-                        "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
-                    }
-                    yield f"data: {json.dumps(chunk)}\n\n"
+                    yield _make_chunk(completion_id, created, req_model,
+                                      {}, finish_reason)
+
+            # Handle error results from the CLI
+            elif event.get("type") == "result" and event.get("is_error"):
+                error_msg = event.get("result", "unknown error")
+                yield _make_chunk(completion_id, created, req_model,
+                                  {"content": f"\n[cc2api] claude error: {error_msg}"}, "stop")
+                yield "data: [DONE]\n\n"
+                return
 
             # Extract usage from the final result event
             elif event.get("type") == "result":
                 usage = event.get("usage", {})
-                chunk = {
+                usage_chunk = {
                     "id": completion_id,
                     "object": "chat.completion.chunk",
                     "created": created,
@@ -172,13 +205,23 @@ async def stream_claude_sse(prompt: str, system_prompt: str, model: Optional[str
                         "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
                     },
                 }
-                yield f"data: {json.dumps(chunk)}\n\n"
+                yield f"data: {json.dumps(usage_chunk)}\n\n"
+
+        # If the process exited with no text output at all, report stderr
+        await proc.wait()
+        if not got_text and proc.returncode != 0:
+            stderr = ""
+            if proc.stderr:
+                stderr = (await proc.stderr.read()).decode("utf-8", errors="replace").strip()
+            yield _make_chunk(completion_id, created, req_model,
+                              {"content": f"[cc2api] claude exited with code {proc.returncode}: {stderr}"},
+                              "stop")
 
         yield "data: [DONE]\n\n"
     finally:
         if proc.returncode is None:
             proc.kill()
-        await proc.wait()
+            await proc.wait()
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────
@@ -190,10 +233,11 @@ async def chat_completions(req: ChatCompletionRequest):
     user_parts: list[str] = []
 
     for msg in req.messages:
+        text = normalize_content(msg.content)
         if msg.role == "system":
-            system_prompt = msg.content
+            system_prompt = text
         else:
-            user_parts.append(f"{msg.role}: {msg.content}")
+            user_parts.append(f"{msg.role}: {text}")
 
     if not user_parts:
         raise HTTPException(status_code=400, detail="No user/assistant messages provided")
