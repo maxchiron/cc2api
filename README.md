@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="logo.png" alt="cc2api Logo" width="100">
+  <img src="logo.png" alt="cc2api Logo" width="280">
 </div>
 
 <h1 align="center">cc2api</h1>
