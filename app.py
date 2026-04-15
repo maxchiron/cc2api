@@ -1,17 +1,27 @@
 import asyncio
 import json
 import os
+import re
 import subprocess
 import time
 import uuid
 from typing import AsyncGenerator, Optional, Union
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 from starlette.responses import StreamingResponse
 
 app = FastAPI(title="cc2api", description="Claude Code CLI to OpenAI-compatible API gateway")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 
@@ -173,8 +183,12 @@ async def stream_claude_sse(prompt: str, system_prompt: str, model: Optional[str
                     if delta.get("type") == "text_delta":
                         text = delta.get("text", "")
                         got_text = True
-                        yield _make_chunk(completion_id, created, req_model,
-                                          {"content": text})
+                        # Split into word-level tokens for smooth streaming
+                        # (Claude CLI sends large sentence-level chunks)
+                        tokens = re.findall(r"\s*\S+", text)
+                        for token in tokens:
+                            yield _make_chunk(completion_id, created, req_model,
+                                              {"content": token})
 
                 elif etype == "message_delta":
                     stop_reason = inner.get("delta", {}).get("stop_reason")
