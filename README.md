@@ -1,10 +1,10 @@
+<div align="center">
+  <img src="logo.png" alt="cc2api Logo" width="100">
+</div>
+
 <h1 align="center">cc2api</h1>
 
 <p align="center"><a href="https://github.com/maxchiron/cc2api">English</a> | <a href="https://github.com/maxchiron/cc2api/blob/main/README-zh.md">中文</a></p>
-
-<div align="center">
-  <img src="logo.png" alt="cc2api Logo">
-</div>
 
 A simple gateway that exposes the Claude Code CLI as an OpenAI-compatible API.
 
