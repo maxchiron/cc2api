@@ -1,20 +1,24 @@
+import asyncio
 import json
 import os
 import subprocess
 import time
 import uuid
-from typing import Optional
+from typing import Optional, Union
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-app = FastAPI(title="cc2api", description="Claude Code CLI to OpenAI-compatible API gateway")
+app = FastAPI(
+    title="cc2api",
+    description="Claude Code CLI to OpenAI-compatible and Anthropic-compatible API gateway",
+)
 
 DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 
 
-# ── Request / Response models (OpenAI-compatible) ──────────────────────────
+# ── OpenAI-compatible models ───────────────────────────────────────────────
 
 class Message(BaseModel):
     role: str
@@ -36,40 +40,76 @@ class ChatCompletionResponse(BaseModel):
     usage: dict
 
 
-# ── Claude CLI runner ──────────────────────────────────────────────────────
+# ── Anthropic-compatible models ────────────────────────────────────────────
 
-def run_claude(prompt: str, system_prompt: str, model: Optional[str] = None) -> str:
-    env = {
+class AnthropicMessage(BaseModel):
+    role: str
+    content: Union[str, list]
+
+
+class AnthropicRequest(BaseModel):
+    model: str = "claude-sonnet-4-6"
+    max_tokens: int = 1024
+    messages: list[AnthropicMessage]
+    system: Optional[str] = None
+    stream: bool = False
+
+
+# ── Shared helpers ─────────────────────────────────────────────────────────
+
+def _env() -> dict:
+    return {
         **os.environ,
         "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
         "ENABLE_CLAUDEAI_MCP_SERVERS": "false",
     }
 
+
+def _build_cmd(system_prompt: str, model: Optional[str], streaming: bool) -> list[str]:
     cmd = [
         "claude",
         "-p",
-        "--output-format", "json",
+        "--output-format", "stream-json" if streaming else "json",
         "--tools", "",
         "--disable-slash-commands",
         "--settings", json.dumps({"hooks": {}, "mcpServers": {}}),
         "--system-prompt", system_prompt,
     ]
-
+    if streaming:
+        cmd.extend(["--verbose", "--include-partial-messages"])
     if model:
         cmd.extend(["--model", model])
+    return cmd
 
-    cmd.append(prompt)
 
-    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+def _extract_content(content) -> str:
+    """Normalise Anthropic content (string or block list) to plain text."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+            elif hasattr(block, "text"):
+                parts.append(block.text or "")
+        return "".join(parts)
+    return str(content)
 
+
+# ── Sync runner (non-streaming) ────────────────────────────────────────────
+
+def _run_claude(prompt: str, system_prompt: str, model: Optional[str]) -> str:
+    cmd = _build_cmd(system_prompt, model, streaming=False) + [prompt]
+    result = subprocess.run(cmd, capture_output=True, text=True, env=_env())
     if result.returncode != 0:
-        stderr = result.stderr.strip()
-        raise RuntimeError(f"claude exited with code {result.returncode}: {stderr}")
-
+        raise RuntimeError(
+            f"claude exited with code {result.returncode}: {result.stderr.strip()}"
+        )
     return result.stdout
 
 
-def parse_claude_output(raw: str) -> str:
+def _parse_result(raw: str) -> str:
     try:
         data = json.loads(raw)
         if isinstance(data, dict) and "result" in data:
@@ -79,11 +119,38 @@ def parse_claude_output(raw: str) -> str:
         return raw.strip()
 
 
+# ── Async streaming runner ─────────────────────────────────────────────────
+
+async def _stream_claude_events(
+    prompt: str, system_prompt: str, model: Optional[str]
+):
+    """Yield raw Anthropic-format event dicts from the claude stream-json output."""
+    cmd = _build_cmd(system_prompt, model, streaming=True) + [prompt]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=_env(),
+    )
+    async for raw_line in proc.stdout:
+        line = raw_line.decode("utf-8", errors="replace").strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        # The CLI wraps each Anthropic streaming event inside {"type":"stream_event","event":{...}}
+        if data.get("type") == "stream_event":
+            yield data["event"]
+    await proc.wait()
+
+
 # ── Endpoints ──────────────────────────────────────────────────────────────
 
 @app.post("/v1/chat/completions")
 async def chat_completions(req: ChatCompletionRequest):
-    # Extract system prompt and user messages
+    """OpenAI-compatible chat completions (non-streaming)."""
     system_prompt = DEFAULT_SYSTEM_PROMPT
     user_parts: list[str] = []
 
@@ -97,16 +164,14 @@ async def chat_completions(req: ChatCompletionRequest):
         raise HTTPException(status_code=400, detail="No user/assistant messages provided")
 
     prompt = "\n\n".join(user_parts)
-
-    # Map model name — pass through if not the default placeholder
     model = None if req.model == "claude-code" else req.model
 
     try:
-        raw = run_claude(prompt, system_prompt, model)
+        raw = _run_claude(prompt, system_prompt, model)
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e))
 
-    content = parse_claude_output(raw)
+    content = _parse_result(raw)
 
     return ChatCompletionResponse(
         id=f"chatcmpl-{uuid.uuid4().hex[:12]}",
@@ -121,6 +186,50 @@ async def chat_completions(req: ChatCompletionRequest):
         ],
         usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     )
+
+
+@app.post("/v1/messages")
+async def anthropic_messages(req: AnthropicRequest):
+    """Anthropic Messages API endpoint with optional SSE streaming."""
+    system_prompt = req.system or DEFAULT_SYSTEM_PROMPT
+
+    parts = []
+    for msg in req.messages:
+        parts.append(f"{msg.role}: {_extract_content(msg.content)}")
+    prompt = "\n\n".join(parts)
+
+    if not prompt.strip():
+        raise HTTPException(status_code=400, detail="No messages provided")
+
+    model = req.model if req.model != "claude-code" else None
+
+    # ── Streaming response ─────────────────────────────────────────────────
+    if req.stream:
+        async def sse_generator():
+            async for event in _stream_claude_events(prompt, system_prompt, model):
+                event_type = event.get("type", "")
+                yield f"event: {event_type}\ndata: {json.dumps(event)}\n\n"
+
+        return StreamingResponse(sse_generator(), media_type="text/event-stream")
+
+    # ── Non-streaming response ─────────────────────────────────────────────
+    try:
+        raw = _run_claude(prompt, system_prompt, model)
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    content = _parse_result(raw)
+
+    return {
+        "id": f"msg_{uuid.uuid4().hex[:24]}",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": content}],
+        "model": req.model,
+        "stop_reason": "end_turn",
+        "stop_sequence": None,
+        "usage": {"input_tokens": 0, "output_tokens": 0},
+    }
 
 
 @app.get("/v1/models")
