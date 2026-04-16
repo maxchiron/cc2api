@@ -148,7 +148,6 @@ curl -X POST http://127.0.0.1:8080/v1/messages \
 
 ## TODO
 
-- [ ] compatible to multi conversations (Now only one round QA)
 - [ ] support tool-use and more official functions. (Now not support the official format of tool-use request, but prompt-based tool-use should be working)
 
 ## 许可

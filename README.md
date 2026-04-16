@@ -149,7 +149,6 @@ The `model` field is passed directly to the `claude` CLI via `--model`. If the m
 
 ## TODO
 
-- [ ] compatible to multi conversations (Now only one round QA)
 - [ ] support tool-use and more official functions. (Now not support the official format of tool-use request, but prompt-based tool-use should be working)
 
 ## License
