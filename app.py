@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Optional, Union
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
@@ -36,14 +36,24 @@ def _load_apikeys() -> set[str]:
 
 
 async def verify_api_key(
+    request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
 ) -> None:
-    """FastAPI dependency: enforce API key when apikeys.txt is populated."""
+    """FastAPI dependency: enforce API key when apikeys.txt is populated.
+
+    Accepts the key via either:
+      - x-api-key: <key>          (Anthropic native format)
+      - Authorization: Bearer <key>  (OpenAI / generic Bearer format)
+    """
     valid_keys = _load_apikeys()
     if not valid_keys:
         # No keys configured — open access (backwards-compatible).
         return
-    if credentials is None or credentials.credentials not in valid_keys:
+    # Prefer x-api-key (Anthropic clients), fall back to Bearer token.
+    token = request.headers.get("x-api-key") or (
+        credentials.credentials if credentials else None
+    )
+    if not token or token not in valid_keys:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
