@@ -5,70 +5,97 @@
 
 <h1>🍤 cc2api</h1>
 
-一个将 Claude Code CLI 暴露为 OpenAI 兼容 API 的简易网关。
+一个将 Claude Code CLI 暴露为 **Anthropic 兼容 API** 的简易网关。
 
-`cc2api` 接收传入的 `/v1/chat/completions` 请求，提取`system prompt`和`prompt`，使用bash调用 `claude -p`，并将cc的响应以标准 OpenAI 聊天格式返回。
+`cc2api` 接收传入的 `/v1/messages` 请求（Anthropic Messages API 格式），提取 `system prompt` 和 `messages`，使用 bash 调用 `claude -p`，并以标准 Anthropic 格式返回响应——完整支持**流式输出（SSE）**。
 
 ## 为什么存在
 
-Claude官方从2026.0404开始，全面封禁第三方对cc的OAuth调用，即，用`OAuth generated key + 伪造的HTTP请求头`，已经失效。现在必须是经过正版claude code发出的请求才可以。
+Claude 官方从 2026.04.04 开始，全面封禁第三方对 cc 的 OAuth 调用，即用 `OAuth generated key + 伪造的 HTTP 请求头` 已经失效。现在必须是经过正版 Claude Code 发出的请求才可以。
 
-我在阅读claude --help时发现，claude -p/--print 参数，能够进行快速的一问一答QA，而不用进入cc的交互式UI。
+我在阅读 `claude --help` 时发现，`claude -p/--print` 参数能够进行快速的一问一答 QA，而不用进入 cc 的交互式 UI。
 
-于是我想，是否可以利用claude -p，将其封装为一个OpenAI api？于是，本项目由此而生。
+于是我想，是否可以利用 `claude -p`，将其封装为一个 Anthropic API？于是，本项目由此而生。
 
-claud本仓库面向希望将现有 OpenAI 风格客户端与 Claude Code 命令行接口对接的开发者。该服务保持 OpenAI 兼容请求形态，同时将实际文本生成委托给 `claude`。
+本仓库面向希望将现有 Anthropic 风格客户端与 Claude Code 命令行接口对接的开发者。该服务保持 Anthropic 兼容请求形态，同时将实际文本生成委托给 `claude`。
 
 ## 关键行为
 
-- 接受 OpenAI 风格的聊天补全请求
+- 接受 Anthropic Messages API 请求（`/v1/messages`）
+- 支持**流式（SSE）**和非流式响应
 - 提取 `system` 提示和对话消息
 - 使用受控环境变量通过 subprocess 运行 `claude`
 - 如果未提供，则使用默认系统提示：`You are a helpful assistant.`
-- 暂不支持流式响应
 
 ## 支持的端点
 
-### POST `/v1/chat/completions`
+### POST `/v1/messages`（主要端点）
 
-接受 OpenAI 兼容的聊天补全请求体。
+接受 Anthropic Messages API 格式的请求体，支持流式和非流式响应。
 
-示例：
+**非流式示例：**
 
 ```json
 {
-  "model": "claude-code",
+  "model": "claude-sonnet-4-6",
+  "max_tokens": 1024,
+  "system": "You are a helpful assistant.",
   "messages": [
-    {"role": "system", "content": "You are a helpful assistant."},
     {"role": "user", "content": "Translate this into bash: list all Python files recursively."}
   ]
 }
 ```
 
-网关会将消息列表转换为单个提示，调用 `claude`，解析其 JSON 输出，并返回类似以下的响应：
+响应：
 
 ```json
 {
-  "id": "chatcmpl-...",
-  "object": "chat.completion",
-  "created": 1234567890,
-  "model": "claude-code",
-  "choices": [
-    {
-      "index": 0,
-      "message": {"role": "assistant", "content": "..."},
-      "finish_reason": "stop"
-    }
-  ],
-  "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+  "id": "msg_...",
+  "type": "message",
+  "role": "assistant",
+  "content": [{"type": "text", "text": "..."}],
+  "model": "claude-sonnet-4-6",
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {"input_tokens": 0, "output_tokens": 0}
 }
 ```
 
+**流式示例：**
+
+```json
+{
+  "model": "claude-sonnet-4-6",
+  "max_tokens": 1024,
+  "stream": true,
+  "messages": [
+    {"role": "user", "content": "简单解释量子纠缠。"}
+  ]
+}
+```
+
+响应为标准 Anthropic SSE 事件流（`message_start`、`content_block_delta`、`message_stop` 等）。
+
+### POST `/v1/chat/completions`（OpenAI 兼容，仅供测试）
+
+也提供了一个基础的 OpenAI 兼容端点，仅用于测试目的。**仅支持非流式。**
+
+```json
+{
+  "model": "claude-code",
+  "messages": [
+    {"role": "user", "content": "你好！"}
+  ]
+}
+```
+
+> 注意：该端点仅用于快速测试 OpenAI 风格客户端的兼容性，不支持流式输出。
+
 ## 快速开始
 
-首先，您需要通过OAuth登录claude code cli，这能够让后续的claude -p内部实现正确运行。
+首先，您需要通过 OAuth 登录 claude code cli，这能让后续的 `claude -p` 内部正确运行。
 
-然后，在能够正常使用 `claude -p "你好吗？"`的机器/终端里，进行本项目的安装：
+然后，在能够正常使用 `claude -p "你好吗？"` 的机器/终端里，进行本项目的安装：
 
 ```bash
 git clone https://github.com/maxchiron/cc2api
@@ -80,12 +107,29 @@ pip install -e .
 cc2api
 ```
 
-然后发送请求到 OpenAI 兼容端点：
+发送非流式请求到 Anthropic 端点：
 
 ```bash
-curl -X POST http://127.0.0.1:8080/v1/chat/completions \
+curl -X POST http://127.0.0.1:8080/v1/messages \
   -H "Content-Type: application/json" \
-  -d '{"model":"claude-code","messages":[{"role":"user","content":"Explain the single responsibility principle."}]}'
+  -d '{
+    "model": "claude-sonnet-4-6",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "解释单一职责原则。"}]
+  }'
+```
+
+发送流式请求：
+
+```bash
+curl -X POST http://127.0.0.1:8080/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-sonnet-4-6",
+    "max_tokens": 1024,
+    "stream": true,
+    "messages": [{"role": "user", "content": "解释单一职责原则。"}]
+  }'
 ```
 
 ## 运行细节
@@ -98,12 +142,12 @@ curl -X POST http://127.0.0.1:8080/v1/chat/completions \
 - `--disable-slash-commands`
 - `--settings '{"hooks":{},"mcpServers":{}}'`
 - `--system-prompt` 来自请求或使用回退默认值
+- `--output-format stream-json`（流式）/ `json`（非流式）
 
-如果请求中包含 `model: "claude-code"`，实现会将其视为默认占位符，不会显式传递 `--model`。任何其他模型值都会转发给 `claude` CLI。
+`model` 字段通过 `--model` 直接传递给 `claude` CLI。若模型为 `claude-code`，则省略 `--model`，CLI 使用其默认值。
 
 ## TODO
 
-- [ ] streaming response (Now only non-stream)
 - [ ] compatible to multi conversations (Now only one round QA)
 - [ ] support tool-use and more official functions. (Now not support the official format of tool-use request, but prompt-based tool-use should be working)
 
