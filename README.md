@@ -27,6 +27,7 @@ This repository is designed for developers who want to bridge existing Anthropic
 - Extracts `system` prompt and conversation messages
 - Runs `claude` via subprocess with controlled environment variables
 - Uses default system prompt: `You are a helpful assistant.` when none is provided
+- Optional **API key authentication** via `apikeys.txt` (hot-reloaded on every request)
 
 ## Supported endpoints
 
@@ -92,6 +93,45 @@ A basic OpenAI-compatible endpoint is also provided for testing purposes. **Non-
 
 > Note: This endpoint exists for quick compatibility testing with OpenAI-style clients. It does not support streaming.
 
+## API Key Authentication
+
+cc2api supports optional API key whitelisting. Keys are read from `apikeys.txt` on **every request**, so changes take effect immediately — no server restart required.
+
+### Setup
+
+Create `apikeys.txt` in the directory where you run `cc2api`, one key per line:
+
+```
+sk-mykey-abc123
+sk-another-key-xyz
+# lines starting with # are ignored
+```
+
+When the file exists and contains at least one key, every request to `/v1/messages` and `/v1/chat/completions` must include a valid key in the `Authorization` header:
+
+```
+Authorization: Bearer sk-mykey-abc123
+```
+
+An invalid or missing key returns `401 Unauthorized`.
+
+When `apikeys.txt` does not exist or is empty, the server runs in **open mode** (no authentication required) — fully backwards-compatible with existing setups.
+
+> **Security note:** `apikeys.txt` is listed in `.gitignore` by default. Never commit real keys to version control.
+
+### Example with auth
+
+```bash
+curl -X POST http://127.0.0.1:8080/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-mykey-abc123" \
+  -d '{
+    "model": "claude-sonnet-4-6",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
 ## QuickStart
 
 First, you need to log in to claude code cli via OAuth, which allows subsequent `claude -p` to run correctly internally.
@@ -132,6 +172,8 @@ curl -X POST http://127.0.0.1:8080/v1/messages \
     "messages": [{"role": "user", "content": "Explain the single responsibility principle."}]
   }'
 ```
+
+> If you have configured `apikeys.txt`, add `-H "Authorization: Bearer <your-key>"` to every request.
 
 ## Runtime details
 

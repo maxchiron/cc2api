@@ -162,3 +162,6 @@ Thumbs.db
 
 # Linux
 *~
+
+# API keys — never commit real keys
+apikeys.txt

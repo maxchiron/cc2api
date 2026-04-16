@@ -4,10 +4,12 @@ import os
 import subprocess
 import time
 import uuid
+from pathlib import Path
 from typing import Optional, Union
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 app = FastAPI(
@@ -16,6 +18,33 @@ app = FastAPI(
 )
 
 DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
+APIKEYS_FILE = Path("apikeys.txt")
+
+_bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def _load_apikeys() -> set[str]:
+    """Read apikeys.txt and return the set of valid keys. Empty set = open access."""
+    if not APIKEYS_FILE.exists():
+        return set()
+    keys = set()
+    for line in APIKEYS_FILE.read_text(encoding="utf-8").splitlines():
+        key = line.strip()
+        if key and not key.startswith("#"):
+            keys.add(key)
+    return keys
+
+
+async def verify_api_key(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
+) -> None:
+    """FastAPI dependency: enforce API key when apikeys.txt is populated."""
+    valid_keys = _load_apikeys()
+    if not valid_keys:
+        # No keys configured — open access (backwards-compatible).
+        return
+    if credentials is None or credentials.credentials not in valid_keys:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
 # ── OpenAI-compatible models ───────────────────────────────────────────────
@@ -149,7 +178,7 @@ async def _stream_claude_events(
 # ── Endpoints ──────────────────────────────────────────────────────────────
 
 @app.post("/v1/chat/completions")
-async def chat_completions(req: ChatCompletionRequest):
+async def chat_completions(req: ChatCompletionRequest, _: None = Depends(verify_api_key)):
     """OpenAI-compatible chat completions (non-streaming)."""
     system_prompt = DEFAULT_SYSTEM_PROMPT
     user_parts: list[str] = []
@@ -189,7 +218,7 @@ async def chat_completions(req: ChatCompletionRequest):
 
 
 @app.post("/v1/messages")
-async def anthropic_messages(req: AnthropicRequest):
+async def anthropic_messages(req: AnthropicRequest, _: None = Depends(verify_api_key)):
     """Anthropic Messages API endpoint with optional SSE streaming."""
     system_prompt = req.system or DEFAULT_SYSTEM_PROMPT
 
