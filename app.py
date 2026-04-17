@@ -26,6 +26,7 @@ SUPPORTED_MODELS = [
     "claude-haiku-4-5",
 ]
 VALID_EFFORT = {"low", "medium", "high", "xhigh", "max"}
+BUDGET_TO_EFFORT = {1792: "low", 8704: "high", 13312: "max"}
 DEBUG = False
 
 _bearer_scheme = HTTPBearer(auto_error=False)
@@ -94,6 +95,11 @@ class AnthropicMessage(BaseModel):
     content: Union[str, list]
 
 
+class Thinking(BaseModel):
+    type: str
+    budget_tokens: Optional[int] = None
+
+
 class AnthropicRequest(BaseModel):
     model: str = "claude-sonnet-4-6"
     max_tokens: int = 1024
@@ -101,6 +107,7 @@ class AnthropicRequest(BaseModel):
     system: Optional[str] = None
     stream: bool = False
     effort: Optional[str] = None
+    thinking: Optional[Thinking] = None
 
 
 # ── Shared helpers ─────────────────────────────────────────────────────────
@@ -111,6 +118,14 @@ def _env() -> dict:
         "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
         "ENABLE_CLAUDEAI_MCP_SERVERS": "false",
     }
+
+
+def _resolve_effort(req) -> Optional[str]:
+    if req.effort:
+        return req.effort
+    if req.thinking and req.thinking.type == "enabled":
+        return BUDGET_TO_EFFORT.get(req.thinking.budget_tokens, "medium")
+    return "medium"
 
 
 def _build_cmd(system_prompt: str, model: Optional[str], streaming: bool,
@@ -312,10 +327,12 @@ async def anthropic_messages(req: AnthropicRequest, _: None = Depends(verify_api
         raise HTTPException(status_code=400,
             detail=f"Invalid effort '{req.effort}'. Must be one of: {sorted(VALID_EFFORT)}")
 
+    effort = _resolve_effort(req)
+
     # ── Streaming response ─────────────────────────────────────────────────
     if req.stream:
         async def sse_generator():
-            async for event in _stream_claude_events(prompt, system_prompt, model, effort=req.effort):
+            async for event in _stream_claude_events(prompt, system_prompt, model, effort=effort):
                 event_type = event.get("type", "")
                 yield f"event: {event_type}\ndata: {json.dumps(event)}\n\n"
 
@@ -323,7 +340,7 @@ async def anthropic_messages(req: AnthropicRequest, _: None = Depends(verify_api
 
     # ── Non-streaming response ─────────────────────────────────────────────
     try:
-        raw = _run_claude(prompt, system_prompt, model, effort=req.effort)
+        raw = _run_claude(prompt, system_prompt, model, effort=effort)
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e))
 
