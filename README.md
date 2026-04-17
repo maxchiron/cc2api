@@ -44,9 +44,12 @@ Accepts a request body in Anthropic Messages API format. Supports both streaming
   "system": "You are a helpful assistant.",
   "messages": [
     {"role": "user", "content": "Translate this into bash: list all Python files recursively."}
-  ]
+  ],
+  "effort": "high"
 }
 ```
+
+The `effort` field is optional. Valid values: `low`, `medium`, `high`, `xhigh`, `max`.
 
 Response:
 
@@ -188,6 +191,8 @@ The `claude` invocation is executed with these enforced environment variables an
 - `--output-format stream-json` (streaming) / `json` (non-streaming)
 
 The `model` field is passed directly to the `claude` CLI via `--model`. If the model is `claude-code`, `--model` is omitted and the CLI uses its default.
+
+The optional `effort` field maps to `--effort` (values: `low`, `medium`, `high`, `xhigh`, `max`). Omitting it lets the CLI use its default effort level.
 
 ## TODO
 

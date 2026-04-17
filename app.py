@@ -24,6 +24,7 @@ SUPPORTED_MODELS = [
     "claude-sonnet-4-6",
     "claude-haiku-4-5",
 ]
+VALID_EFFORT = {"low", "medium", "high", "xhigh", "max"}
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -97,6 +98,7 @@ class AnthropicRequest(BaseModel):
     messages: list[AnthropicMessage]
     system: Optional[str] = None
     stream: bool = False
+    effort: Optional[str] = None
 
 
 # ── Shared helpers ─────────────────────────────────────────────────────────
@@ -109,7 +111,8 @@ def _env() -> dict:
     }
 
 
-def _build_cmd(system_prompt: str, model: Optional[str], streaming: bool) -> list[str]:
+def _build_cmd(system_prompt: str, model: Optional[str], streaming: bool,
+               effort: Optional[str] = None) -> list[str]:
     cmd = [
         "claude",
         "-p",
@@ -123,6 +126,8 @@ def _build_cmd(system_prompt: str, model: Optional[str], streaming: bool) -> lis
         cmd.extend(["--verbose", "--include-partial-messages"])
     if model:
         cmd.extend(["--model", model])
+    if effort:
+        cmd.extend(["--effort", effort])
     return cmd
 
 
@@ -143,8 +148,9 @@ def _extract_content(content) -> str:
 
 # ── Sync runner (non-streaming) ────────────────────────────────────────────
 
-def _run_claude(prompt: str, system_prompt: str, model: Optional[str]) -> str:
-    cmd = _build_cmd(system_prompt, model, streaming=False) + [prompt]
+def _run_claude(prompt: str, system_prompt: str, model: Optional[str],
+                effort: Optional[str] = None) -> str:
+    cmd = _build_cmd(system_prompt, model, streaming=False, effort=effort) + [prompt]
     result = subprocess.run(cmd, capture_output=True, text=True, env=_env())
     if result.returncode != 0:
         raise RuntimeError(
@@ -166,10 +172,11 @@ def _parse_result(raw: str) -> str:
 # ── Async streaming runner ─────────────────────────────────────────────────
 
 async def _stream_claude_events(
-    prompt: str, system_prompt: str, model: Optional[str]
+    prompt: str, system_prompt: str, model: Optional[str],
+    effort: Optional[str] = None,
 ):
     """Yield raw Anthropic-format event dicts from the claude stream-json output."""
-    cmd = _build_cmd(system_prompt, model, streaming=True) + [prompt]
+    cmd = _build_cmd(system_prompt, model, streaming=True, effort=effort) + [prompt]
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -249,10 +256,14 @@ async def anthropic_messages(req: AnthropicRequest, _: None = Depends(verify_api
         raise HTTPException(status_code=400, detail=f"Invalid model id: {req.model!r}")
     model = req.model
 
+    if req.effort and req.effort not in VALID_EFFORT:
+        raise HTTPException(status_code=400,
+            detail=f"Invalid effort '{req.effort}'. Must be one of: {sorted(VALID_EFFORT)}")
+
     # ── Streaming response ─────────────────────────────────────────────────
     if req.stream:
         async def sse_generator():
-            async for event in _stream_claude_events(prompt, system_prompt, model):
+            async for event in _stream_claude_events(prompt, system_prompt, model, effort=req.effort):
                 event_type = event.get("type", "")
                 yield f"event: {event_type}\ndata: {json.dumps(event)}\n\n"
 
@@ -260,7 +271,7 @@ async def anthropic_messages(req: AnthropicRequest, _: None = Depends(verify_api
 
     # ── Non-streaming response ─────────────────────────────────────────────
     try:
-        raw = _run_claude(prompt, system_prompt, model)
+        raw = _run_claude(prompt, system_prompt, model, effort=req.effort)
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e))
 
