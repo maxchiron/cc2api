@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
@@ -25,6 +25,7 @@ SUPPORTED_MODELS = [
     "claude-haiku-4-5",
 ]
 VALID_EFFORT = {"low", "medium", "high", "xhigh", "max"}
+DEBUG = False
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -197,6 +198,52 @@ async def _stream_claude_events(
     await proc.wait()
 
 
+# ── Debug middleware ───────────────────────────────────────────────────────
+
+@app.middleware("http")
+async def _debug_middleware(request: Request, call_next):
+    if not DEBUG:
+        return await call_next(request)
+
+    body_bytes = await request.body()
+    print(f"\n{'='*60}\n→ {request.method} {request.url.path}")
+    if body_bytes:
+        try:
+            print(json.dumps(json.loads(body_bytes), indent=2, ensure_ascii=False))
+        except json.JSONDecodeError:
+            print(body_bytes.decode(errors="replace"))
+
+    response = await call_next(request)
+    print(f"\n← {response.status_code}")
+
+    if "text/event-stream" in response.headers.get("content-type", ""):
+        orig = response.body_iterator
+        async def _logged():
+            async for chunk in orig:
+                text = chunk.decode(errors="replace").strip()
+                if text:
+                    print(text)
+                yield chunk
+        response.body_iterator = _logged()
+        return response
+
+    chunks = []
+    async for chunk in response.body_iterator:
+        chunks.append(chunk)
+    body = b"".join(chunks)
+    if body:
+        try:
+            print(json.dumps(json.loads(body), indent=2, ensure_ascii=False))
+        except json.JSONDecodeError:
+            print(body.decode(errors="replace"))
+    return Response(
+        content=body,
+        status_code=response.status_code,
+        headers={k: v for k, v in response.headers.items() if k.lower() != "content-length"},
+        media_type=response.media_type,
+    )
+
+
 # ── Endpoints ──────────────────────────────────────────────────────────────
 
 @app.post("/v1/chat/completions")
@@ -303,7 +350,13 @@ async def list_models():
 # ── Entrypoint ─────────────────────────────────────────────────────────────
 
 def main():
+    import argparse
     import uvicorn
+    global DEBUG
+    parser = argparse.ArgumentParser(description="cc2api — Claude Code to API gateway")
+    parser.add_argument("--debug", action="store_true", help="Print full request and response")
+    args, _ = parser.parse_known_args()
+    DEBUG = args.debug
     uvicorn.run("app:app", host="0.0.0.0", port=8080, log_level="info")
 
 
