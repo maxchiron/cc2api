@@ -19,6 +19,11 @@ app = FastAPI(
 
 DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 APIKEYS_FILE = Path("apikeys.txt")
+SUPPORTED_MODELS = [
+    "claude-opus-4-7",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5",
+]
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -240,7 +245,9 @@ async def anthropic_messages(req: AnthropicRequest, _: None = Depends(verify_api
     if not prompt.strip():
         raise HTTPException(status_code=400, detail="No messages provided")
 
-    model = req.model if req.model != "claude-code" else None
+    if req.model not in SUPPORTED_MODELS:
+        raise HTTPException(status_code=400, detail=f"Invalid model id: {req.model!r}")
+    model = req.model
 
     # ── Streaming response ─────────────────────────────────────────────────
     if req.stream:
@@ -276,12 +283,8 @@ async def list_models():
     return {
         "object": "list",
         "data": [
-            {
-                "id": "claude-code",
-                "object": "model",
-                "created": 0,
-                "owned_by": "anthropic",
-            }
+            {"id": m, "object": "model", "created": 0, "owned_by": "anthropic"}
+            for m in SUPPORTED_MODELS
         ],
     }
 
