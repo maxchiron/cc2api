@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import shlex
 import subprocess
 import time
 import uuid
@@ -152,6 +153,8 @@ def _extract_content(content) -> str:
 def _run_claude(prompt: str, system_prompt: str, model: Optional[str],
                 effort: Optional[str] = None) -> str:
     cmd = _build_cmd(system_prompt, model, streaming=False, effort=effort) + [prompt]
+    if DEBUG:
+        print(f"\n$ {shlex.join(cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True, env=_env())
     if result.returncode != 0:
         raise RuntimeError(
@@ -178,6 +181,8 @@ async def _stream_claude_events(
 ):
     """Yield raw Anthropic-format event dicts from the claude stream-json output."""
     cmd = _build_cmd(system_prompt, model, streaming=True, effort=effort) + [prompt]
+    if DEBUG:
+        print(f"\n$ {shlex.join(cmd)}")
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
