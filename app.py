@@ -104,7 +104,7 @@ class AnthropicRequest(BaseModel):
     model: str = "claude-sonnet-4-6"
     max_tokens: int = 1024
     messages: list[AnthropicMessage]
-    system: Optional[str] = None
+    system: Optional[Union[str, list]] = None
     stream: bool = False
     effort: Optional[str] = None
     thinking: Optional[Thinking] = None
@@ -309,7 +309,7 @@ async def chat_completions(req: ChatCompletionRequest, _: None = Depends(verify_
 @app.post("/v1/messages")
 async def anthropic_messages(req: AnthropicRequest, _: None = Depends(verify_api_key)):
     """Anthropic Messages API endpoint with optional SSE streaming."""
-    system_prompt = req.system or DEFAULT_SYSTEM_PROMPT
+    system_prompt = _extract_content(req.system) if req.system else DEFAULT_SYSTEM_PROMPT
 
     parts = []
     for msg in req.messages:
