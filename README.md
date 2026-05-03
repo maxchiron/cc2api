@@ -3,11 +3,11 @@
 <p align="center"><a href="https://github.com/maxchiron/cc2api">English</a> | <a href="https://github.com/maxchiron/cc2api/blob/main/README-zh.md">中文</a></p>
 </div>
 
-<h1>🍤 cc2api</h1>
+<h1>🛡️✅ cc2api-safe</h1>
 
 A simple gateway that exposes the Claude Code CLI as an **Anthropic-compatible API**.
 
-`cc2api` accepts incoming `/v1/messages` requests (Anthropic Messages API format), extracts the `system prompt` and `messages`, invokes `claude -p` via bash, and returns the response in standard Anthropic format — with full **streaming (SSE)** support.
+`cc2api-safe` accepts incoming `/v1/messages` requests (Anthropic Messages API format), extracts the `system prompt` and `messages`, invokes `claude -p` via bash, and returns the response in standard Anthropic format — with full **streaming (SSE)** support.
 
 ## Why this exists
 
@@ -19,6 +19,48 @@ So I thought, could I utilize `claude -p` to wrap it as an Anthropic API? Thus, 
 
 This repository is designed for developers who want to bridge existing Anthropic-style clients with the Claude Code command-line interface. The service preserves the request shape expected by Anthropic-compatible tooling while delegating actual text generation to `claude`.
 
+## QuickStart
+
+First, you need to log in to claude code cli via OAuth, which allows subsequent `claude -p` to run correctly internally.
+
+Then, on a machine/terminal where you can normally use `claude -p "hello?"`, proceed with the installation of this project:
+
+```bash
+git clone https://github.com/maxchiron/cc2api
+cd cc2api
+python3 -m venv .venv
+source .venv/bin/activate   # macOS/Linux
+# .venv\Scripts\Activate.ps1   # Windows PowerShell
+pip install -e .
+cc2api
+```
+
+Send a non-streaming request to the Anthropic endpoint:
+
+```bash
+curl -X POST http://127.0.0.1:8080/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-sonnet-4-6",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Explain the single responsibility principle."}]
+  }'
+```
+
+Send a streaming request:
+
+```bash
+curl -X POST http://127.0.0.1:8080/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-sonnet-4-6",
+    "max_tokens": 1024,
+    "stream": true,
+    "messages": [{"role": "user", "content": "Explain the single responsibility principle."}]
+  }'
+```
+
+> If you have configured `apikeys.txt`, add `-H "Authorization: Bearer <your-key>"` to every request.
 
 ## Key behavior
 
@@ -81,21 +123,6 @@ Response:
 
 The response is an SSE stream with standard Anthropic event types (`message_start`, `content_block_delta`, `message_stop`, etc.).
 
-### POST `/v1/chat/completions` (OpenAI-compatible, for testing only)
-
-A basic OpenAI-compatible endpoint is also provided for testing purposes. **Non-streaming only.**
-
-```json
-{
-  "model": "claude-code",
-  "messages": [
-    {"role": "user", "content": "Hello!"}
-  ]
-}
-```
-
-> Note: This endpoint exists for quick compatibility testing with OpenAI-style clients. It does not support streaming.
-
 ## API Key Authentication
 
 cc2api supports optional API key whitelisting. Keys are read from `apikeys.txt` on **every request**, so changes take effect immediately — no server restart required.
@@ -134,49 +161,6 @@ curl -X POST http://127.0.0.1:8080/v1/messages \
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```
-
-## QuickStart
-
-First, you need to log in to claude code cli via OAuth, which allows subsequent `claude -p` to run correctly internally.
-
-Then, on a machine/terminal where you can normally use `claude -p "hello?"`, proceed with the installation of this project:
-
-```bash
-git clone https://github.com/maxchiron/cc2api
-cd cc2api
-python3 -m venv .venv
-source .venv/bin/activate   # macOS/Linux
-# .venv\Scripts\Activate.ps1   # Windows PowerShell
-pip install -e .
-cc2api
-```
-
-Send a non-streaming request to the Anthropic endpoint:
-
-```bash
-curl -X POST http://127.0.0.1:8080/v1/messages \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-sonnet-4-6",
-    "max_tokens": 1024,
-    "messages": [{"role": "user", "content": "Explain the single responsibility principle."}]
-  }'
-```
-
-Send a streaming request:
-
-```bash
-curl -X POST http://127.0.0.1:8080/v1/messages \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-sonnet-4-6",
-    "max_tokens": 1024,
-    "stream": true,
-    "messages": [{"role": "user", "content": "Explain the single responsibility principle."}]
-  }'
-```
-
-> If you have configured `apikeys.txt`, add `-H "Authorization: Bearer <your-key>"` to every request.
 
 ## Runtime details
 
